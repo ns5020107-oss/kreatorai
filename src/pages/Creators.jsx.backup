@@ -1,0 +1,318 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { ALL_CREATORS } from "../data/creators";
+import {
+  CHIPS, SKILLS, SPECIALIZATIONS, TOOL_NAMES, CONTENT_TYPES,
+  ASPECT_RATIOS, COMMERCIAL_LEVELS, LICENSE_ORDER, PRICE_BANDS, AVAILABILITY, LANGUAGES,
+} from "../data/taxonomy";
+import { Icon } from "../lib/art";
+import CreatorCard from "../components/CreatorCard";
+import { EmptyState } from "../components/bits";
+
+const DEFAULTS = {
+  q: "", chip: "All", source: "All", skills: [], specializations: [], tools: [], contentTypes: [],
+  aspects: [], license: "any", price: "any", availability: [], verifiedOnly: false, languages: [],
+};
+
+const SOURCE_OPTIONS = ["All", "Featured", "Directory"];
+
+function parseParams(sp) {
+  const get = (k) => sp.get(k) || "";
+  const arr = (k) => (get(k) ? get(k).split(",").filter(Boolean) : []);
+  const src = get("src");
+  return {
+    ...DEFAULTS,
+    q: get("q"), chip: get("chip") || "All",
+    source: SOURCE_OPTIONS.includes(src) ? src : "All",
+    skills: arr("skills"), specializations: arr("specs"), tools: arr("tools"),
+    contentTypes: arr("types"), aspects: arr("aspects"),
+    license: get("license") || "any", price: get("price") || "any",
+    availability: arr("avail"), verifiedOnly: get("vonly") === "1", languages: arr("lang"),
+  };
+}
+
+function toParams(f) {
+  const p = {};
+  if (f.q) p.q = f.q;
+  if (f.chip !== "All") p.chip = f.chip;
+  if (f.source !== "All") p.src = f.source;
+  if (f.skills.length) p.skills = f.skills.join(",");
+  if (f.specializations.length) p.specs = f.specializations.join(",");
+  if (f.tools.length) p.tools = f.tools.join(",");
+  if (f.contentTypes.length) p.types = f.contentTypes.join(",");
+  if (f.aspects.length) p.aspects = f.aspects.join(",");
+  if (f.license !== "any") p.license = f.license;
+  if (f.price !== "any") p.price = f.price;
+  if (f.availability.length) p.avail = f.availability.join(",");
+  if (f.verifiedOnly) p.vonly = "1";
+  if (f.languages.length) p.lang = f.languages.join(",");
+  return p;
+}
+
+function relevanceScore(c, q) {
+  if (!q) return c.trustScore ?? 0;
+  const s = q.toLowerCase();
+  let n = 0;
+  if (c.name.toLowerCase().includes(s)) n += 30;
+  if ((c.headline || "").toLowerCase().includes(s)) n += 18;
+  n += (c.skills || []).filter((x) => x.toLowerCase().includes(s)).length * 8;
+  n += (c.tools || []).filter((x) => x.toLowerCase().includes(s)).length * 8;
+  if (c.specialization.toLowerCase().includes(s)) n += 12;
+  if ((c.location || "").toLowerCase().includes(s)) n += 10;
+  return n + (c.trustScore ?? 0) / 10;
+}
+
+function applyFilters(list, f) {
+  const q = f.q.trim().toLowerCase();
+  return list.filter((c) => {
+    if (f.chip !== "All" && c.specialization !== f.chip) return false;
+    if (f.source !== "All" && c.source !== f.source.toLowerCase()) return false;
+    if (q) {
+      const hay = [c.name, c.headline, c.specialization, c.location, ...(c.skills || []), ...(c.tools || [])]
+        .join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (f.skills.length && !(c.skills || []).some((s) => f.skills.includes(s))) return false;
+    if (f.specializations.length && !f.specializations.includes(c.specialization)) return false;
+    if (f.tools.length && !(c.tools || []).some((t) => f.tools.includes(t))) return false;
+    if (f.contentTypes.length && !(c.contentTypes || []).some((t) => f.contentTypes.includes(t))) return false;
+    if (f.aspects.length && !(c.aspectRatios || []).some((a) => f.aspects.includes(a))) return false;
+    if (f.license !== "any") {
+      const need = LICENSE_ORDER.indexOf(f.license);
+      const have = c.licenseLevel ? LICENSE_ORDER.indexOf(c.licenseLevel) : -1;
+      if (have < need) return false;
+    }
+    if (f.price !== "any") {
+      if (c.rateMin == null || c.rateMax == null) return false; // unknown price never matches a budget band
+      const band = PRICE_BANDS.find((b) => b.id === f.price);
+      if (!(c.rateMin <= band.max && c.rateMax >= band.min)) return false;
+    }
+    if (f.availability.length && !f.availability.includes(c.availability)) return false;
+    if (f.verifiedOnly) {
+      const n = ["tools", "workflow", "pastWork", "commercialSafe"].filter((k) => c.verify?.[k]).length;
+      if (n < 3) return false;
+    }
+    if (f.languages.length && !(c.languages || []).some((l) => f.languages.includes(l))) return false;
+    return true;
+  });
+}
+
+function CheckGroup({ title, options, selected, onToggle, idPrefix }) {
+  return (
+    <fieldset style={{ border: "none", padding: 0, margin: "0 0 18px" }}>
+      <legend className="legend-label" style={{ padding: 0 }}>{title}</legend>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 168, overflowY: "auto" }}>
+        {options.map((o) => {
+          const id = `${idPrefix}-${String(o).replace(/[^a-z0-9]+/gi, "-")}`;
+          return (
+            <label key={o} htmlFor={id} className="check-row" style={{ padding: "5px 0", fontSize: 14 }}>
+              <input id={id} type="checkbox" checked={selected.includes(o)}
+                onChange={() => onToggle(o)} />
+              <span>{o}</span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+function FilterPanel({ f, set, ns }) {
+  const toggle = (key) => (val) =>
+    set({ ...f, [key]: f[key].includes(val) ? f[key].filter((x) => x !== val) : [...f[key], val] });
+  return (
+    <div>
+      <CheckGroup title="Skills" options={SKILLS} selected={f.skills} onToggle={toggle("skills")} idPrefix={`${ns}-fs`} />
+      <CheckGroup title="Specialization" options={SPECIALIZATIONS} selected={f.specializations} onToggle={toggle("specializations")} idPrefix={`${ns}-fp`} />
+      <CheckGroup title="Tools" options={TOOL_NAMES} selected={f.tools} onToggle={toggle("tools")} idPrefix={`${ns}-ft`} />
+      <CheckGroup title="Content type" options={CONTENT_TYPES} selected={f.contentTypes} onToggle={toggle("contentTypes")} idPrefix={`${ns}-fc`} />
+      <CheckGroup title="Aspect ratio" options={ASPECT_RATIOS} selected={f.aspects} onToggle={toggle("aspects")} idPrefix={`${ns}-fa`} />
+      <div className="field">
+        <label htmlFor={`${ns}-license`}>Commercial use</label>
+        <select id={`${ns}-license`} className="select" value={f.license} onChange={(e) => set({ ...f, license: e.target.value })}>
+          {COMMERCIAL_LEVELS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
+        </select>
+      </div>
+      <div className="field">
+        <label htmlFor={`${ns}-price`}>Budget</label>
+        <select id={`${ns}-price`} className="select" value={f.price} onChange={(e) => set({ ...f, price: e.target.value })}>
+          {PRICE_BANDS.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
+        </select>
+      </div>
+      <CheckGroup title="Availability" options={AVAILABILITY} selected={f.availability} onToggle={toggle("availability")} idPrefix={`${ns}-fav`} />
+      <CheckGroup title="Language" options={LANGUAGES} selected={f.languages} onToggle={toggle("languages")} idPrefix={`${ns}-fl`} />
+      <label className="check-row" htmlFor={`${ns}-vonly`} style={{ fontWeight: 700 }}>
+        <input id={`${ns}-vonly`} type="checkbox" checked={f.verifiedOnly}
+          onChange={(e) => set({ ...f, verifiedOnly: e.target.checked })} />
+        <span>Verified only <span style={{ fontWeight: 400, color: "var(--muted)" }}>(3+ checks)</span></span>
+      </label>
+    </div>
+  );
+}
+
+export default function Creators() {
+  const [sp, setSp] = useSearchParams();
+  const [f, setF] = useState(() => parseParams(sp));
+  const [sort, setSort] = useState("relevance");
+  const [drawer, setDrawer] = useState(false);
+  const qTimer = useRef(null);
+  const [qInput, setQInput] = useState(f.q);
+
+  // "Clear all" / removing the search tag must also empty the text box
+  useEffect(() => { setQInput(f.q); }, [f.q]);
+  // don't fire a pending debounced update after leaving the page
+  useEffect(() => () => clearTimeout(qTimer.current), []);
+
+  // keep URL in sync (debounced for typing)
+  useEffect(() => {
+    const t = setTimeout(() => setSp(toParams(f), { replace: true }), 350);
+    return () => clearTimeout(t);
+  }, [f, setSp]);
+
+  const setQ = (q) => {
+    setQInput(q);
+    clearTimeout(qTimer.current);
+    qTimer.current = setTimeout(() => setF((prev) => ({ ...prev, q })), 250);
+  };
+
+  const results = useMemo(() => {
+    const filtered = applyFilters(ALL_CREATORS, f);
+    const sorted = [...filtered];
+    if (sort === "price") sorted.sort((a, b) => (a.rateMin ?? Infinity) - (b.rateMin ?? Infinity));
+    else if (sort === "newest") sorted.sort((a, b) => String(b.joined || "").localeCompare(String(a.joined || "")));
+    else if (sort === "verified") sorted.sort((a, b) => (b.trustScore ?? 0) - (a.trustScore ?? 0));
+    else sorted.sort((a, b) => relevanceScore(b, f.q) - relevanceScore(a, f.q));
+    return sorted;
+  }, [f, sort]);
+
+  const tags = [];
+  if (f.chip !== "All") tags.push({ label: f.chip, clear: () => setF({ ...f, chip: "All" }) });
+  if (f.source !== "All") tags.push({ label: `Source: ${f.source}`, clear: () => setF({ ...f, source: "All" }) });
+  f.skills.forEach((s) => tags.push({ label: s, clear: () => setF({ ...f, skills: f.skills.filter((x) => x !== s) }) }));
+  f.specializations.forEach((s) => tags.push({ label: s, clear: () => setF({ ...f, specializations: f.specializations.filter((x) => x !== s) }) }));
+  f.tools.forEach((s) => tags.push({ label: s, clear: () => setF({ ...f, tools: f.tools.filter((x) => x !== s) }) }));
+  f.contentTypes.forEach((s) => tags.push({ label: s, clear: () => setF({ ...f, contentTypes: f.contentTypes.filter((x) => x !== s) }) }));
+  f.aspects.forEach((s) => tags.push({ label: s, clear: () => setF({ ...f, aspects: f.aspects.filter((x) => x !== s) }) }));
+  if (f.license !== "any") tags.push({ label: COMMERCIAL_LEVELS.find((l) => l.id === f.license).label, clear: () => setF({ ...f, license: "any" }) });
+  if (f.price !== "any") tags.push({ label: PRICE_BANDS.find((b) => b.id === f.price).label, clear: () => setF({ ...f, price: "any" }) });
+  f.availability.forEach((s) => tags.push({ label: s, clear: () => setF({ ...f, availability: f.availability.filter((x) => x !== s) }) }));
+  f.languages.forEach((s) => tags.push({ label: s, clear: () => setF({ ...f, languages: f.languages.filter((x) => x !== s) }) }));
+  if (f.verifiedOnly) tags.push({ label: "Verified only", clear: () => setF({ ...f, verifiedOnly: false }) });
+  if (f.q.trim()) tags.push({ label: `"${f.q.trim()}"`, clear: () => setF({ ...f, q: "" }) });
+
+  const clearAll = () => setF({ ...DEFAULTS });
+
+  return (
+    <div className="wrap" style={{ paddingTop: 30, paddingBottom: 40 }}>
+      <h1 style={{ fontSize: 38, marginBottom: 6 }}>Find your AI creator</h1>
+      <p style={{ color: "var(--muted)", marginBottom: 18 }}>
+        {ALL_CREATORS.length} creators · 14 featured profiles + 100 public directory listings ·
+        every filter tells you what it actually checks
+      </p>
+
+      {/* sticky chip bar */}
+      <div style={{ position: "sticky", top: 64, zIndex: 50, background: "var(--paper)", paddingTop: 8 }}>
+        <div className="chipbar" role="tablist" aria-label="Filter by craft">
+          {CHIPS.map((c) => (
+            <button key={c} role="tab" aria-selected={f.chip === c}
+              className={"chip" + (f.chip === c ? " active" : "")}
+              onClick={() => setF({ ...f, chip: c })}>
+              {c}
+              {c !== "All" && <span className="n">{ALL_CREATORS.filter((x) => x.specialization === c).length}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* source segmented control */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, flexWrap: "wrap" }} role="group" aria-label="Filter by creator source">
+        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--muted)" }}>Source:</span>
+        {SOURCE_OPTIONS.map((s) => {
+          const n = s === "All" ? ALL_CREATORS.length : ALL_CREATORS.filter((x) => x.source === s.toLowerCase()).length;
+          return (
+            <button key={s} className={"chip" + (f.source === s ? " active" : "")}
+              aria-pressed={f.source === s}
+              onClick={() => setF({ ...f, source: s })}
+              style={{ fontSize: 13, padding: "7px 14px" }}>
+              {s} <span className="n">{n}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="browse-layout" style={{ marginTop: 10 }}>
+        <aside className="card filters-card" aria-label="Filters">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18, margin: 0 }}>Filters</h3>
+            <button className="btn-quiet btn-sm" onClick={clearAll}>Clear all</button>
+          </div>
+          <FilterPanel f={f} set={setF} ns="side" />
+        </aside>
+
+        <div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+            <button className="btn-line btn-sm show-mobile" onClick={() => setDrawer(true)}>
+              <Icon name="filter" size={15} /> Filters{tags.length > 0 && ` (${tags.length})`}
+            </button>
+            <div style={{ position: "relative", flex: "1 1 220px" }}>
+              <Icon name="search" size={16} style={{ position: "absolute", left: 12, top: 12, color: "var(--muted)" }} />
+              <input className="input" value={qInput} onChange={(e) => setQ(e.target.value)}
+                placeholder="Search name, skill, tool…" aria-label="Search creators" style={{ paddingLeft: 36 }} />
+            </div>
+            <select className="select" value={sort} onChange={(e) => setSort(e.target.value)}
+              aria-label="Sort creators" style={{ width: "auto" }}>
+              <option value="relevance">Sort: Relevance</option>
+              <option value="price">Sort: Price, low to high</option>
+              <option value="newest">Sort: Newest</option>
+              <option value="verified">Sort: Most verified</option>
+            </select>
+          </div>
+
+          {tags.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }} aria-label="Active filters">
+              {tags.map((t, i) => (
+                <span className="tag" key={i}>
+                  {t.label}
+                  <button onClick={t.clear} aria-label={`Remove filter ${t.label}`}><Icon name="x" size={11} /></button>
+                </span>
+              ))}
+              <button className="btn-quiet btn-sm" onClick={clearAll}>Clear all</button>
+            </div>
+          )}
+
+          <p style={{ fontSize: 14, color: "var(--muted)", marginBottom: 14 }} role="status">
+            {results.length} {results.length === 1 ? "creator" : "creators"} found
+          </p>
+
+          {results.length === 0 ? (
+            <EmptyState
+              title="Nobody matches — yet"
+              body="That combination is pretty specific. Try dropping one filter (the licence or budget one is usually the culprit), or tell us what you need and we'll point you the right way."
+              action={<button className="btn" onClick={clearAll}>Clear all filters</button>}
+            />
+          ) : (
+            <div className="creator-grid">
+              {results.map((c) => <CreatorCard key={c.id} creator={c} />)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {drawer && (
+        <>
+          <div className="scrim" onClick={() => setDrawer(false)} />
+          <div className="drawer" role="dialog" aria-modal="true" aria-label="Filters">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <h3 style={{ fontSize: 19, margin: 0 }}>Filters</h3>
+              <button className="x-btn" onClick={() => setDrawer(false)} aria-label="Close filters"><Icon name="x" size={16} /></button>
+            </div>
+            <FilterPanel f={f} set={setF} ns="drawer" />
+            <button className="btn" style={{ width: "100%", marginTop: 8 }} onClick={() => setDrawer(false)}>
+              Show {results.length} {results.length === 1 ? "creator" : "creators"}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
