@@ -9,7 +9,7 @@ const { checkDb, isDbUp, requireDb } = require("./db");
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
 
-app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
+app.use(cors({ origin: [process.env.FRONTEND_URL || "http://localhost:5173", "https://ns5020107-oss.github.io"] }));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (req, res) => {
