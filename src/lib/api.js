@@ -9,7 +9,7 @@ export class ApiError extends Error {
   }
 }
 
-export const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/+$/, "");
+export const API_BASE = (import.meta.env.VITE_API_URL || "https://kreatorai.onrender.com").replace(/\/+$/, "");
 
 export async function api(path, { method = "GET", body, token } = {}) {
   const headers = { "Content-Type": "application/json" };
