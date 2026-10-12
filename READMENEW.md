@@ -393,9 +393,7 @@ Roadmap items are ideas for further development, not a claim that each feature i
 4. Never include real credentials in commits.
 5. Submit a pull request with a clear summary and testing notes.
 
-## License
 
-Add or update this section to match the license file in the repository. If the repository does not include a license, the project is not automatically open source simply because its code is public.
 
 ---
 
